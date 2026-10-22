@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { SafeAreaView, ScrollView, View, Text, TextInput, Pressable, StyleSheet, useWindowDimensions } from 'react-native';
+import { configureAmplify, createFestivalEvent, deleteFestivalEvent, listFestivalEvents, updateFestivalEvent } from './src/amplify';
 import { initialEvents, FestivalEvent, EventStatus } from './src/data';
 import { theme as c } from './src/theme';
 
@@ -41,18 +42,86 @@ export default function App() {
   const [time,setTime] = useState('21:45');
   const [status,setStatus] = useState<EventStatus>('CONFIRMED');
   const [notice,setNotice] = useState('');
+  const [backendReady,setBackendReady] = useState(false);
+
+  useEffect(() => {
+    const loadInitialData = async () => {
+      const ready = await configureAmplify();
+      setBackendReady(ready);
+
+      if (!ready) {
+        setNotice('Demo local: backend de Amplify no está configurado todavía.');
+        return;
+      }
+
+      const remoteEvents = await listFestivalEvents();
+      if (remoteEvents.length > 0) {
+        setEvents(remoteEvents);
+        setNotice('Datos cargados desde AWS Amplify.');
+      } else {
+        setNotice('Backend conectado. Usa "Nuevo evento" para guardar en AWS.');
+      }
+    };
+
+    void loadInitialData();
+  }, []);
 
   const filtered = useMemo(() => events.filter(e => (filter === 'TODOS' || e.space === filter) && (e.artist.toLowerCase().includes(search.toLowerCase()) || e.id.toLowerCase().includes(search.toLowerCase()))),[events,search,filter]);
   const openNew = () => {setEditing(null);setArtist('');setSpace(stages[0]);setTime('21:45');setStatus('CONFIRMED');setNotice('');setPage('form');};
   const openEdit = (e: FestivalEvent) => {setEditing(e.id);setArtist(e.artist);setSpace(e.space);setTime(e.time);setStatus(e.status);setNotice('');setPage('form');};
-  const save = () => {
+  const save = async () => {
     if(!artist.trim() || !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)){setNotice('Introduce un artista y una hora válida (HH:MM).');return;}
-    if(editing){setEvents(v => v.map(e => e.id === editing ? {...e,artist:artist.trim().toUpperCase(),space,time,status} : e));setNotice('Evento actualizado (datos locales).');}
-    else {const id='EVT-'+Date.now().toString().slice(-7);setEvents(v=>[{id,artist:artist.trim().toUpperCase(),space,time,status},...v]);setNotice('Evento creado (datos locales).');}
+
+    const payload = { artist: artist.trim().toUpperCase(), space, time, status };
+
+    if(editing){
+      const updated = await updateFestivalEvent(editing, payload);
+      if(updated){
+        setEvents(v => v.map(e => e.id === editing ? updated : e));
+        setNotice('Evento actualizado en AWS Amplify.');
+      } else {
+        setEvents(v => v.map(e => e.id === editing ? {...e,...payload} : e));
+        setNotice('Evento actualizado (datos locales).');
+      }
+    } else {
+      const created = await createFestivalEvent(payload);
+      if(created){
+        setEvents(v => [created, ...v]);
+        setNotice('Evento creado en AWS Amplify.');
+      } else {
+        const id='EVT-'+Date.now().toString().slice(-7);
+        setEvents(v=>[{id,...payload},...v]);
+        setNotice('Evento creado (datos locales).');
+      }
+    }
     setPage('events');
   };
-  const changeStatus = (id:string) => {setEvents(v=>v.map(e=>e.id===id?{...e,status:e.status==='CONFIRMED'?'DELAYED':e.status==='DELAYED'?'CANCELLED':'CONFIRMED'}:e));setNotice('Estado actualizado localmente.');};
-  const remove = (id:string) => {setEvents(v=>v.filter(e=>e.id!==id));setNotice('Evento eliminado localmente.');};
+  const changeStatus = async (id:string) => {
+    const current = events.find(e => e.id === id);
+    if (!current) return;
+
+    const nextStatus: EventStatus = current.status === 'CONFIRMED' ? 'DELAYED' : current.status === 'DELAYED' ? 'CANCELLED' : 'CONFIRMED';
+    const updated = await updateFestivalEvent(id, { ...current, status: nextStatus });
+
+    if(updated){
+      setEvents(v=>v.map(e=>e.id===id?updated:e));
+      setNotice('Estado actualizado en AWS Amplify.');
+    } else {
+      setEvents(v=>v.map(e=>e.id===id?{...e,status:nextStatus}:e));
+      setNotice('Estado actualizado localmente.');
+    }
+  };
+  const remove = async (id:string) => {
+    const removed = await deleteFestivalEvent(id);
+
+    if(removed){
+      setEvents(v=>v.filter(e=>e.id!==id));
+      setNotice('Evento eliminado de AWS Amplify.');
+    } else {
+      setEvents(v=>v.filter(e=>e.id!==id));
+      setNotice('Evento eliminado localmente.');
+    }
+  };
   const confirmed = events.filter(e=>e.status==='CONFIRMED').length;
   const delayed = events.filter(e=>e.status==='DELAYED').length;
   return <SafeAreaView style={s.root}>
@@ -107,7 +176,7 @@ export default function App() {
         </View>
       </>}
       {!!notice && <Text accessibilityRole="alert" style={s.notice}>{notice}</Text>}
-      <View style={s.footer}><Text style={s.footerText}>FESTIVAL CONTROL · FRONTEND DEMO · REACT NATIVE + EXPO</Text><Text style={s.footerText}>NO BACKEND · NO HTTP · NO PERSISTENCIA</Text></View>
+      <View style={s.footer}><Text style={s.footerText}>FESTIVAL CONTROL · FRONTEND DEMO · REACT NATIVE + EXPO</Text><Text style={s.footerText}>{backendReady ? 'AWS AMPLIFY BACKEND CONECTADO' : 'SIN CONFIGURACIÓN DE AWS AÚN'}</Text></View>
     </ScrollView>
   </SafeAreaView>;
 }
